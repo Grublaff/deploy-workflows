@@ -1,0 +1,17 @@
+# Drop this at .github/workflows/deploy.yml in your static-site repo.
+# Replace `my-site` with your repo/site name.
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    uses: Grublaff/deploy-workflows/.github/workflows/deploy-site.yml@v1
+    with:
+      image-name: my-site
+      site-type: static
+      build-command: npm run build
+      build-output: dist
+    secrets: inherit

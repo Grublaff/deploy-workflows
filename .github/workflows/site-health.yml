@@ -1,0 +1,58 @@
+name: Site health check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Add one URL per site you want monitored.
+        url:
+          - https://hello-world.alburg.se/healthz
+    steps:
+      - name: Probe ${{ matrix.url }}
+        id: probe
+        run: |
+          set +e
+          for i in 1 2 3; do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "${{ matrix.url }}")
+            if [[ "$CODE" == "200" ]]; then
+              echo "OK on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $CODE"
+            sleep 10
+          done
+          echo "url=${{ matrix.url }}" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Open or update issue in infra repo
+        if: failure() && steps.probe.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_ISSUE_TOKEN }}
+          INFRA_REPO: ${{ github.repository_owner }}/infra
+        run: |
+          TITLE="Health check failing: ${{ steps.probe.outputs.url }}"
+          BODY=$(cat <<EOF
+          The scheduled health check failed three times in a row.
+
+          - URL: ${{ steps.probe.outputs.url }}
+          - Last HTTP code: ${{ steps.probe.outputs.code }}
+          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          EXISTING=$(gh issue list --repo "$INFRA_REPO" --search "$TITLE in:title" --state open --json number --jq '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "$INFRA_REPO" --body "$BODY"
+          else
+            gh issue create --repo "$INFRA_REPO" --title "$TITLE" --body "$BODY" --label "health-check"
+          fi

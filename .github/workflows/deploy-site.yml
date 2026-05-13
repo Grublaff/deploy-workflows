@@ -1,0 +1,179 @@
+name: Deploy site (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Image name in GHCR (final image will be ghcr.io/<owner-lowercased>/<image-name>)"
+        required: true
+        type: string
+      site-type:
+        description: "'static' for SSG/HTML, 'docker' for Dockerfile-based apps"
+        required: true
+        type: string
+      build-command:
+        description: "Build command for static sites (e.g. 'npm run build'). Leave empty if dist/ is already built."
+        required: false
+        type: string
+        default: ""
+      build-output:
+        description: "Build output directory for static sites"
+        required: false
+        type: string
+        default: "dist"
+      port:
+        description: "Port the container listens on (used for smoke test)"
+        required: false
+        type: number
+        default: 80
+      skip-trivy:
+        description: "Skip the Trivy vulnerability scan (do not use long-term)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate site-type input
+        run: |
+          if [[ "${{ inputs.site-type }}" != "static" && "${{ inputs.site-type }}" != "docker" ]]; then
+            echo "::error::site-type must be 'static' or 'docker'; got '${{ inputs.site-type }}'"
+            exit 1
+          fi
+
+      - name: Checkout caller repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Best-effort lint/test (npm 'ci' script if present)
+        continue-on-error: true
+        run: |
+          if [[ -f package.json ]] && jq -e '.scripts.ci' package.json > /dev/null 2>&1; then
+            echo "Found package.json with 'ci' script — running it"
+            if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+            npm run ci
+          else
+            echo "No package.json 'ci' script — skipping (this is fine)"
+          fi
+
+      - name: Set up Node (static only)
+        if: inputs.site-type == 'static'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "20"
+          cache: ${{ hashFiles('**/package-lock.json') != '' && 'npm' || '' }}
+
+      - name: Build static site
+        if: inputs.site-type == 'static' && inputs.build-command != ''
+        run: |
+          if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+          ${{ inputs.build-command }}
+
+      - name: Verify build output exists (static only)
+        if: inputs.site-type == 'static'
+        run: |
+          if [[ ! -d "${{ inputs.build-output }}" ]]; then
+            echo "::error::build-output directory '${{ inputs.build-output }}' not found"
+            echo "Files in repo root:" && ls -la
+            exit 1
+          fi
+          if [[ -z "$(ls -A ${{ inputs.build-output }} 2>/dev/null)" ]]; then
+            echo "::error::build-output directory '${{ inputs.build-output }}' is empty"
+            exit 1
+          fi
+
+      - name: Generate Dockerfile for static site
+        if: inputs.site-type == 'static'
+        run: |
+          cat > Dockerfile.static <<EOF
+          FROM caddy:2-alpine
+          COPY ${{ inputs.build-output }}/ /usr/share/caddy/
+          USER 1000
+          EOF
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER_LC}/${{ inputs.image-name }}"
+          SHA_TAG="sha-${GITHUB_SHA::7}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          echo "sha=${IMAGE}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image (load to local daemon for smoke test)
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
+        with:
+          context: .
+          file: ${{ inputs.site-type == 'static' && 'Dockerfile.static' || 'Dockerfile' }}
+          load: true
+          tags: |
+            ${{ steps.tags.outputs.latest }}
+            ${{ steps.tags.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          PORT="${{ inputs.port }}"
+          CID="$(docker run -d --rm -p 0:${PORT} ${{ steps.tags.outputs.latest }})"
+          HOST_PORT="$(docker port "$CID" "${PORT}/tcp" | head -n1 | awk -F: '{print $NF}')"
+          echo "Mapped host port: ${HOST_PORT}"
+          for i in 1 2 3 4 5; do
+            if curl -fsS -o /dev/null "http://127.0.0.1:${HOST_PORT}/"; then
+              echo "Smoke test passed on attempt $i"
+              docker stop "$CID" > /dev/null
+              exit 0
+            fi
+            echo "Attempt $i failed; container logs follow:"
+            docker logs "$CID" 2>&1 | tail -20 || true
+            sleep 2
+          done
+          echo "::error::Smoke test failed — container did not respond with 2xx on /"
+          docker logs "$CID" 2>&1 | tail -50
+          docker stop "$CID" > /dev/null
+          exit 1
+
+      - name: Trivy vulnerability scan
+        if: inputs.skip-trivy == false
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ${{ steps.tags.outputs.latest }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          format: table
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
+        with:
+          context: .
+          file: ${{ inputs.site-type == 'static' && 'Dockerfile.static' || 'Dockerfile' }}
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.latest }}
+            ${{ steps.tags.outputs.sha }}
+          cache-from: type=gha
+
+      - name: Summary
+        run: |
+          echo "## Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ steps.tags.outputs.latest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA tag: \`${{ steps.tags.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Watchtower will pick this up within \`WATCHTOWER_POLL_INTERVAL\` seconds (default 300)." >> "$GITHUB_STEP_SUMMARY"

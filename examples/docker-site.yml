@@ -1,0 +1,17 @@
+# Drop this at .github/workflows/deploy.yml in your Dockerized app repo.
+# The repo must contain a Dockerfile at the root. Replace `my-app` and the
+# port with values matching your application.
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    uses: Grublaff/deploy-workflows/.github/workflows/deploy-site.yml@v1
+    with:
+      image-name: my-app
+      site-type: docker
+      port: 8080
+    secrets: inherit

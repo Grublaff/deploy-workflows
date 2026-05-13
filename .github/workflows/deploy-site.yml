@@ -87,12 +87,31 @@ jobs:
             exit 1
           fi
 
-      - name: Generate Dockerfile for static site
+      - name: Generate Dockerfile and .dockerignore for static site
         if: inputs.site-type == 'static'
         run: |
           cat > Dockerfile.static <<EOF
           FROM nginxinc/nginx-unprivileged:alpine-slim
           COPY --chown=nginx ${{ inputs.build-output }}/ /usr/share/nginx/html/
+          EOF
+          # When build-output is the repo root, we'd otherwise drag .git etc.
+          # into the image. .dockerignore keeps the image small and avoids
+          # leaking metadata.
+          cat > .dockerignore <<EOF
+          .git
+          .github
+          .gitignore
+          .gitattributes
+          .editorconfig
+          .vscode
+          .idea
+          node_modules
+          README.md
+          *.md
+          LICENSE
+          Dockerfile
+          Dockerfile.static
+          .dockerignore
           EOF
 
       - name: Set up Docker Buildx

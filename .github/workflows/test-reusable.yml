@@ -1,0 +1,13 @@
+name: Test reusable
+on:
+  workflow_call:
+    inputs:
+      msg:
+        required: true
+        type: string
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "got msg: ${{ inputs.msg }}"

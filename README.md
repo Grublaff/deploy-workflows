@@ -7,7 +7,7 @@ Reusable GitHub Actions workflow for building and publishing homelab sites that 
 Each site repo calls this workflow on push to `main`. It:
 
 1. Best-effort runs `npm run ci` if your `package.json` defines it (non-blocking).
-2. Builds a Docker image — static sites are baked into `caddy:2-alpine`; Dockerized apps use the repo's `Dockerfile`.
+2. Builds a Docker image — static sites are baked into `nginxinc/nginx-unprivileged:alpine-slim` (listens on port 8080, runs as `nginx` user); Dockerized apps use the repo's `Dockerfile`.
 3. Smoke-tests the image with `docker run` + `curl` (5 retries, 2-second poll).
 4. Trivy-scans for HIGH/CRITICAL vulnerabilities (skippable but recommended).
 5. Pushes to `ghcr.io/<owner-lowercased>/<image-name>:latest` and `:sha-<short>`.

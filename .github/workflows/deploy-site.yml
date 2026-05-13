@@ -91,9 +91,8 @@ jobs:
         if: inputs.site-type == 'static'
         run: |
           cat > Dockerfile.static <<EOF
-          FROM caddy:2-alpine
-          COPY ${{ inputs.build-output }}/ /usr/share/caddy/
-          USER 1000
+          FROM nginxinc/nginx-unprivileged:alpine-slim
+          COPY --chown=nginx ${{ inputs.build-output }}/ /usr/share/nginx/html/
           EOF
 
       - name: Set up Docker Buildx
@@ -124,7 +123,12 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          PORT="${{ inputs.port }}"
+          # Static sites use nginx-unprivileged which listens on 8080.
+          if [[ "${{ inputs.site-type }}" == "static" ]]; then
+            PORT=8080
+          else
+            PORT="${{ inputs.port }}"
+          fi
           CID="$(docker run -d --rm -p 0:${PORT} ${{ steps.tags.outputs.latest }})"
           HOST_PORT="$(docker port "$CID" "${PORT}/tcp" | head -n1 | awk -F: '{print $NF}')"
           echo "Mapped host port: ${HOST_PORT}"

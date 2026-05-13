@@ -14,6 +14,22 @@ Each site repo calls this workflow on push to `main`. It:
 
 Watchtower on `home-server` polls GHCR every 5 minutes and restarts containers when a new `:latest` lands.
 
+## Required caller setup
+
+Every caller workflow must grant `packages: write` permission to the deploy job — the post-2023 GitHub default of `contents: read` is too narrow to push to GHCR. The example templates already include this block. If you write your own caller workflow from scratch:
+
+```yaml
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      packages: write
+    uses: Grublaff/deploy-workflows/.github/workflows/deploy-site.yml@v1.1
+    ...
+```
+
+Without it, the run fails immediately at startup with no logs (GitHub rejects the permission elevation request).
+
 ## Use it
 
 Pin to a tagged version so the workflow can evolve without breaking your sites silently:

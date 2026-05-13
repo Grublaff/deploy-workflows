@@ -8,7 +8,10 @@ on:
 
 jobs:
   deploy:
-    uses: Grublaff/deploy-workflows/.github/workflows/deploy-site.yml@v1
+    permissions:
+      contents: read
+      packages: write    # required: lets the workflow push to GHCR
+    uses: Grublaff/deploy-workflows/.github/workflows/deploy-site.yml@v1.1
     with:
       image-name: my-site
       site-type: static

@@ -1,8 +1,13 @@
 name: Site health check
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
+  # Scheduled cron disabled until either:
+  #   (a) a WAF bypass is configured (secret header allowlisted before geo-challenge), or
+  #   (b) probes are migrated to an external uptime service.
+  # Re-enable by uncommenting the schedule block below.
+  #
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -14,12 +19,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Add one URL per site you want monitored.
         url:
           - https://hello-world.alburg.se/healthz
+          - https://recipes.alburg.se/
+          - https://resources.alburg.se/
     steps:
       - name: Probe ${{ matrix.url }}
-        id: probe
         run: |
           set +e
           for i in 1 2 3; do
@@ -31,28 +36,5 @@ jobs:
             echo "Attempt $i: HTTP $CODE"
             sleep 10
           done
-          echo "url=${{ matrix.url }}" >> "$GITHUB_OUTPUT"
-          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "::warning::Probe failed three times — got HTTP $CODE"
           exit 1
-
-      - name: Open or update issue in infra repo
-        if: failure() && steps.probe.outputs.url != ''
-        env:
-          GH_TOKEN: ${{ secrets.INFRA_ISSUE_TOKEN }}
-          INFRA_REPO: ${{ github.repository_owner }}/infra
-        run: |
-          TITLE="Health check failing: ${{ steps.probe.outputs.url }}"
-          BODY=$(cat <<EOF
-          The scheduled health check failed three times in a row.
-
-          - URL: ${{ steps.probe.outputs.url }}
-          - Last HTTP code: ${{ steps.probe.outputs.code }}
-          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          EOF
-          )
-          EXISTING=$(gh issue list --repo "$INFRA_REPO" --search "$TITLE in:title" --state open --json number --jq '.[0].number')
-          if [[ -n "$EXISTING" ]]; then
-            gh issue comment "$EXISTING" --repo "$INFRA_REPO" --body "$BODY"
-          else
-            gh issue create --repo "$INFRA_REPO" --title "$TITLE" --body "$BODY" --label "health-check"
-          fi
